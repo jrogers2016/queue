@@ -16,8 +16,11 @@ import collections
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timedelta
 import logging
+import signal
 from subprocess import call
+import os
 from os.path import dirname
+import sys
 
 import tornado.escape
 import tornado.ioloop
@@ -129,7 +132,7 @@ class Scheduler(tornado.web.Application):
             if task['taskstatus'] == PENDING and task['taskworker'].running():
                 task['taskstatus'] = RUNNING
                 logger.info("Task ID {} {}".format(task['taskid'], task['taskstatus']))
-            if task['taskstatus'] == RUNNING and task['taskworker'].done():
+            if task['taskstatus'] in (RUNNING, PENDING) and task['taskworker'].done():
                 task['taskstatus'] = task['taskworker'].result()
                 logger.info("Task ID {} {}".format(task['taskid'], task['taskstatus']))
 
@@ -148,12 +151,32 @@ def main(port, address, workers):
     sockets = tornado.netutil.bind_sockets(port, address=address)
     server = tornado.httpserver.HTTPServer(app)
     server.add_sockets(sockets)
-    logger.info("Scheduler starting up")
     for s in sockets:
         logger.info("Scheduler address: {}:{}".format(*s.getsockname()))
     queue_loop = tornado.ioloop.IOLoop.instance()
-    tornado.ioloop.PeriodicCallback(app.task_runner, 2000).start()
+    tornado.ioloop.PeriodicCallback(app.task_runner, 1000).start()
+
+    def shutdown_handler(signum, frame):
+        exit_handler()
+        sys.exit(0)
+
+    @atexit.register
+    def exit_handler():
+        logger.info("Scheduler instance shutting down")
+        stop()
+
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
+    if os.name == 'nt':
+        signal.signal(signal.SIGBREAK, shutdown_handler)
+    else:
+        signal.signal(signal.SIGQUIT, shutdown_handler)
+
+    logger.info("Scheduler starting up")
     queue_loop.start()
+
+def stop():
+    tornado.ioloop.IOLoop.instance().stop()
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
