@@ -19,7 +19,7 @@ import logging
 import signal
 from subprocess import call
 import os
-from os.path import dirname
+from os.path import dirname, basename
 import sys
 
 import tornado.escape
@@ -139,7 +139,7 @@ class Scheduler(tornado.web.Application):
 
 def worker(taskfile):
     try:
-        call(['cd {}; /bin/bash {}'.format(dirname(taskfile), taskfile)], shell=True )
+        call(['cd {}; /bin/bash {} &> {}.out'.format(dirname(taskfile), taskfile, basename_noext(taskfile))], shell=True )
         return DONE
     except:
         logger.error("Taskfile FAILED: {}".format(taskfile))
@@ -177,6 +177,9 @@ def main(port, address, workers):
 
 def stop():
     tornado.ioloop.IOLoop.instance().stop()
+
+def basename_noext(filename):
+    return '.'.join(filename.split('.')[:-1])
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
