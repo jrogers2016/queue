@@ -21,6 +21,7 @@ from subprocess import call
 import os
 from os.path import dirname, basename
 import sys
+import asyncio
 
 import tornado.escape
 import tornado.ioloop
@@ -158,6 +159,8 @@ def main(port, address, workers):
 
     def shutdown_handler(signum, frame):
         exit_handler()
+        for task in asyncio.Task.all_tasks():
+            task.cancel()
         sys.exit(0)
 
     @atexit.register
