@@ -59,7 +59,7 @@ def test_list_task_by_id(queue, http_client, base_url):
     result = json.loads(response.body.decode('utf-8'))
     taskid = result['taskid']
 
-    request_url = "{}/list/{}".format(base_url, taskid)
+    request_url = "{}/task/{}".format(base_url, taskid)
     response = yield http_client.fetch(request_url)
     result = json.loads(response.body.decode('utf-8'))
     tasklist = result['tasks']
@@ -71,7 +71,7 @@ def test_list_task_by_id(queue, http_client, base_url):
     request_url = "{}/add/{}".format(base_url, taskfile2)
     response = yield http_client.fetch(request_url)
 
-    request_url = "{}/list/{}".format(base_url, taskid)
+    request_url = "{}/task/{}".format(base_url, taskid)
     response = yield http_client.fetch(request_url)
     result = json.loads(response.body.decode('utf-8'))
     tasklist = result['tasks']
@@ -79,7 +79,7 @@ def test_list_task_by_id(queue, http_client, base_url):
     assert taskfile == tasklist[0]['taskfile']
 
     # test probing no non-existent task id
-    request_url = "{}/list/{}".format(base_url, 999)
+    request_url = "{}/task/{}".format(base_url, 999)
     response = yield http_client.fetch(request_url)
     result = json.loads(response.body.decode('utf-8'))
     assert response.code == 200
