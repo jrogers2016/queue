@@ -22,12 +22,14 @@ import os
 from os.path import dirname, basename
 import sys
 import asyncio
+import requests
 
 import tornado.escape
 import tornado.ioloop
 import tornado.web
 import tornado.httpserver
 import tornado.netutil
+import tornado.httpclient
 from tornado import gen
 
 logger = logging.getLogger("silcsbio.scheduler")
@@ -51,11 +53,26 @@ class TaskQueue(collections.deque):
 
 
 class BaseTaskHandler(tornado.web.RequestHandler):
-    def initialize(self, queue, pool=None):
+    def initialize(self, queue, servers=None):
+        #These should be replaced with the dictionary of lists, namely servers
+        #Add number of workers and running jobs in each server
+        #First two entries in each list are number of workers and number of running jobs
+        #Maintain queue as a list of all running jobs
+        #self.queue = queue
+        #self.pool = pool
         self.queue = queue
-        self.pool = pool
+        self.servers = servers
 
 
+
+#class AddServerHandler(BaseTaskHandler) :
+#    def get(self,url,num_workers=1):
+#        tasks = [num_workers,0]
+#        #How do I get the number of workers???
+#        self.servers[url] = tasks
+#Start periodic callback from server to show it's alive?  
+
+        
 class AddTaskHandler(BaseTaskHandler):
     def get(self, taskfile):
         task = {
@@ -66,8 +83,23 @@ class AddTaskHandler(BaseTaskHandler):
         }
         logger.info("Task added: {}".format(taskfile))
 
-        fut = self.pool.submit(worker, taskfile)
-        task['taskworker'] = fut
+        
+        #Determine which url to send to
+        task['server'] = None
+        while not task['server']:
+            for server,jobs in self.servers.items():
+                if jobs[0] > jobs[1]:  #ie it has more processors than running jobs
+        #      Send response, detailed below
+        #Send response to server
+        #name = construct_url_out_of_server here
+                    tornado.httpclient.AsynchHTTPClient().fetch(
+                        tornado.httpclient.HTTPRequest('{}/add/{}'.format(server,taskfile)))
+                    task['server'] = server
+                    jobs.append(task)
+                    break
+        
+        #fut = self.pool.submit(worker, taskfile)
+        #task['taskworker'] = fut
         self.queue.append(task)
 
         response = { 'taskid': task['taskid'],
@@ -78,17 +110,23 @@ class AddTaskHandler(BaseTaskHandler):
 class ListTaskHandler(BaseTaskHandler):
     def get(self):
         tasks = []
-        for task in self.queue:
-            task = {
-                'taskid': task['taskid'],
-                'taskfile': task['taskfile'],
-                'timesubmitted': task['timesubmitted'],
-                'taskstatus': task['taskstatus']
-            }
-            tasks.append(task)
-        response = { 'ntasks': len(self.queue),
-                     'tasks': tasks }
-        self.write(response)
+        #Replace queue with servers and inside loop for server
+        #for task in self.queue:
+        for server,jobs in self.servers.items():
+            processes = jobs[2:]
+            for task in processes:
+                task = {
+                    'taskid': task['taskid'],
+                    'taskfile': task['taskfile'],
+                    'timesubmitted': task['timesubmitted'],
+                    'taskstatus': task['taskstatus']
+                }
+                tasks.append(task)
+            #This should be inside the outer loop, respond and write per server
+            response = { 'ntasks': len(tasks),
+                         'tasks': tasks,
+                         'server': server}
+            self.write(response)
 
 
 class TaskByIdHandler(BaseTaskHandler):
@@ -97,47 +135,101 @@ class TaskByIdHandler(BaseTaskHandler):
             'ntasks': 0,
             'tasks': []
         }
-        for task in list(self.queue):
+        #Replace queue with servers and inside loop for server
+        #for task in list(self.queue):
+        for server,jobs in self.servers.items():
+            processes = jobs[2:]
+            for task in processes:
+                if task['taskid'] == int(id):
+                    task = {
+                        'taskid': task['taskid'],
+                        'taskfile': task['taskfile'],
+                        'timesubmitted': task['timesubmitted'],
+                        'taskstatus': task['taskstatus']
+                    }
+                    response = {
+                        'ntasks': 1,
+                        'tasks': [task]
+                    }
+                    break
             if task['taskid'] == int(id):
-                task = {
-                    'taskid': task['taskid'],
-                    'taskfile': task['taskfile'],
-                    'timesubmitted': task['timesubmitted'],
-                    'taskstatus': task['taskstatus']
-                }
-                response = {
-                    'ntasks': 1,
-                    'tasks': [task]
-                }
                 break
         return self.write(response)
 
+
+class AddGuestHandler(BaseTaskHandler):
+    def get(self, addr, port):
+        # (r"/workers", NumWorkersHandler, {'workers': workers})
+        #tasks = [num_workers,0]
+        url = '{}:{}'.format(addr,port)
+        #num_workers = tornado.httpclient.AsyncHTTPClient().fetch('{}/workers'.format(url))
+        num_workers = requests.get('http://{}/workers/'.format(url)).json()
+        tasks = [num_workers[workers],0]
+        self.servers[url] = tasks
+        #print(addr, port)
+        return self.write({})
+
+
+#        tasks = [num_workers,0]
+#        #How do I get the number of workers???
+#        self.servers[url] = tasks
+
+    """
+def join_worker_pool(hostaddr, hostport, guestaddr, guestport):
+    base_url = 'http://{}:{}'.format(hostaddr, hostport)
+    request_url = '{}/join/{}:{}'.format(base_url, guestaddr, guestport)
+    r = requests.get(request_url)
+    result = r.json()
+    print(result)
+"""
 
 class Scheduler(tornado.web.Application):
     """
     RESTful scheduler
     """
     def __init__(self, queue, workers=None):
+        #Replace with servers, add in the new handler
         self.queue = queue
-        self.pool = ProcessPoolExecutor(max_workers=workers)
+        #self.pool = ProcessPoolExecutor(max_workers=workers)
+        self.servers = {}
         handlers = [
-            (r"/add/(.*)", AddTaskHandler, {'queue': queue, 'pool': self.pool}),
-            (r"/list", ListTaskHandler, {'queue': queue}),
-            (r"/task/([0-9]+)", TaskByIdHandler, {'queue': queue}),
+            (r"/add/(.*)", AddTaskHandler, {'queue': queue, 'servers': self.servers}),
+            (r"/list", ListTaskHandler, {'queue': queue, 'servers': self.servers}),
+            (r"/task/([0-9]+)", TaskByIdHandler, {'queue': queue, 'servers': self.servers}),
+            #(r"/server", AddServerHandler, {'queue': queue, 'servers': self.servers}),
+            (r"/join/([0-9\.]+):([0-9]+)", AddGuestHandler, {'queue': queue, 'servers': self.servers}),
         ]
         tornado.web.Application.__init__(self, handlers)
 
     @gen.coroutine
     def task_runner(self):
-        for task in self.queue:
-            if task['taskstatus'] == PENDING and task['taskworker'].running():
-                task['taskstatus'] = RUNNING
-                logger.info("Task ID {} {}".format(task['taskid'], task['taskstatus']))
-            if task['taskstatus'] in (RUNNING, PENDING) and task['taskworker'].done():
-                task['taskstatus'] = task['taskworker'].result()
-                logger.info("Task ID {} {}".format(task['taskid'], task['taskstatus']))
-
-
+        #for task in self.queue:
+        running = 0
+        for server,jobs in self.servers.items():
+            processes = jobs[2:]
+            #Get the corresponding task from guest here
+            for job in processes:
+                num = job['taskid']
+                base_url = 'http://{}:{}'.format()
+                request_url = '{}/task/{}'.format(base_url,num)
+                task = requests.get(request_url).json()
+                #for task in processes:
+                if task['tasks']['taskstatus'] == RUNNING:
+                    running += 1
+                #if task['taskstatus'] in (FAILED, DONE):
+                    #remove task here    
+                    #pass
+                #if task['taskstatus'] == PENDING and task['taskworker'].running():
+                #    task['taskstatus'] = RUNNING
+                #    running += 1
+                #    logger.info("Task ID {} {} {}".format(server, task['taskid'], task['taskstatus']))
+                #if task['taskstatus'] in (RUNNING, PENDING) and task['taskworker'].done():
+                #    task['taskstatus'] = task['taskworker'].result()
+                #    logger.info("Task ID {} {} {}".format(server, task['taskid'], task['taskstatus']))
+                #if task['taskstatus'] == RUNNING and not task['taskworker'].done():
+                #    running += 1
+            jobs[1] = running
+            
 def worker(taskfile):
     try:
         call(['cd {}; /bin/bash {} &> {}.out'.format(dirname(taskfile), taskfile, basename_noext(taskfile))], shell=True )
