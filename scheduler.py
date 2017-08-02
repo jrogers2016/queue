@@ -92,8 +92,9 @@ class AddTaskHandler(BaseTaskHandler):
         #      Send response, detailed below
         #Send response to server
         #name = construct_url_out_of_server here
-                    tornado.httpclient.AsynchHTTPClient().fetch(
-                        tornado.httpclient.HTTPRequest('{}/add/{}'.format(server,taskfile)))
+                    #requests.get('http://{}/add/{}'.format(server,taskfile))
+                    tornado.httpclient.AsyncHTTPClient().fetch(
+                        tornado.httpclient.HTTPRequest('http://{}/add/{}'.format(server,taskfile)))
                     task['server'] = server
                     jobs.append(task)
                     break
@@ -158,13 +159,17 @@ class TaskByIdHandler(BaseTaskHandler):
 
 
 class AddGuestHandler(BaseTaskHandler):
-    def get(self, addr, port):
+    def get(self, addr, port, workers):
         # (r"/workers", NumWorkersHandler, {'workers': workers})
         #tasks = [num_workers,0]
         url = '{}:{}'.format(addr,port)
         #num_workers = tornado.httpclient.AsyncHTTPClient().fetch('{}/workers'.format(url))
-        num_workers = requests.get('http://{}/workers/'.format(url)).json()
-        tasks = [num_workers[workers],0]
+        logger.info("About to get num workers from http://{}/workers".format(url))
+        request_url = 'http://{}/workers'.format(url)
+        #num_workers = requests.get(request_url)
+        #num_workers = num_workers.json()
+        logger.info("Got num workers")
+        tasks = [int(workers),0]
         self.servers[url] = tasks
         #print(addr, port)
         return self.write({})
@@ -197,7 +202,7 @@ class Scheduler(tornado.web.Application):
             (r"/list", ListTaskHandler, {'queue': queue, 'servers': self.servers}),
             (r"/task/([0-9]+)", TaskByIdHandler, {'queue': queue, 'servers': self.servers}),
             #(r"/server", AddServerHandler, {'queue': queue, 'servers': self.servers}),
-            (r"/join/([0-9\.]+):([0-9]+)", AddGuestHandler, {'queue': queue, 'servers': self.servers}),
+            (r"/join/([0-9\.]+):([0-9]+).([0-9]+)", AddGuestHandler, {'queue': queue, 'servers': self.servers}),
         ]
         tornado.web.Application.__init__(self, handlers)
 
@@ -210,12 +215,14 @@ class Scheduler(tornado.web.Application):
             #Get the corresponding task from guest here
             for job in processes:
                 num = job['taskid']
-                base_url = 'http://{}:{}'.format()
+                base_url = 'http://{}'.format(server)
                 request_url = '{}/task/{}'.format(base_url,num)
                 task = requests.get(request_url).json()
+                #logger.info(task)
                 #for task in processes:
-                if task['tasks']['taskstatus'] == RUNNING:
+                if task['tasks'][0]['taskstatus'] == RUNNING:
                     running += 1
+                    logger.info(running)
                 #if task['taskstatus'] in (FAILED, DONE):
                     #remove task here    
                     #pass

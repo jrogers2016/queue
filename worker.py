@@ -114,8 +114,11 @@ class TaskByIdHandler(BaseTaskHandler):
         return self.write(response)
 
 class NumWorkersHandler(BaseTaskHandler):
-    def get(self, addr, port):
-        wrapper[workers] = self.workers
+    def get(self):
+        logger.info("Fetching num workers from handler")
+        wrapper = { 'workers' : self.workers }
+        #wrapper[workers] = self.workers
+        #logger.info(wrapper)
         return self.write(wrapper)
 
 class Scheduler(tornado.web.Application):
@@ -129,7 +132,7 @@ class Scheduler(tornado.web.Application):
             (r"/add/(.*)", AddTaskHandler, {'queue': queue, 'pool': self.pool}),
             (r"/list", ListTaskHandler, {'queue': queue}),
             (r"/task/([0-9]+)", TaskByIdHandler, {'queue': queue}),
-            (r"/workers/([0-9\.]+):([0-9]+)", NumWorkersHandler, {'workers': workers})
+            (r"/workers", NumWorkersHandler, {'workers': workers}),
         ]
         tornado.web.Application.__init__(self, handlers)
 
@@ -182,17 +185,19 @@ def main(guestport, guestaddr, hostport, hostaddr, workers):
     else:
         signal.signal(signal.SIGQUIT, shutdown_handler)
 
-    join_worker_pool(hostaddr, hostport, guestaddr, guestport)
+    join_worker_pool(hostaddr, hostport, guestaddr, guestport, workers)
 
     logger.info("Scheduler starting up")
     queue_loop.start()
 
-def join_worker_pool(hostaddr, hostport, guestaddr, guestport):
+def join_worker_pool(hostaddr, hostport, guestaddr, guestport, workers):
     base_url = 'http://{}:{}'.format(hostaddr, hostport)
-    request_url = '{}/join/{}:{}'.format(base_url, guestaddr, guestport)
+    request_url = '{}/join/{}:{}.{}'.format(base_url, guestaddr, guestport, workers)
     r = requests.get(request_url)
+    logger.info("About to json result")
     result = r.json()
-    print(result)
+    #print(result)
+    logger.info("Joined worker pool")
 
 def stop():
     tornado.ioloop.IOLoop.instance().stop()
