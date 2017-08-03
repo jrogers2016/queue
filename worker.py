@@ -113,13 +113,6 @@ class TaskByIdHandler(BaseTaskHandler):
                 break
         return self.write(response)
 
-class NumWorkersHandler(BaseTaskHandler):
-    def get(self):
-        logger.info("Fetching num workers from handler")
-        wrapper = { 'workers' : self.workers }
-        #wrapper[workers] = self.workers
-        #logger.info(wrapper)
-        return self.write(wrapper)
 
 class Scheduler(tornado.web.Application):
     """
@@ -132,7 +125,6 @@ class Scheduler(tornado.web.Application):
             (r"/add/(.*)", AddTaskHandler, {'queue': queue, 'pool': self.pool}),
             (r"/list", ListTaskHandler, {'queue': queue}),
             (r"/task/([0-9]+)", TaskByIdHandler, {'queue': queue}),
-            (r"/workers", NumWorkersHandler, {'workers': workers}),
         ]
         tornado.web.Application.__init__(self, handlers)
 
@@ -163,7 +155,7 @@ def main(guestport, guestaddr, hostport, hostaddr, workers):
     server = tornado.httpserver.HTTPServer(app)
     server.add_sockets(sockets)
     for s in sockets:
-        logger.info("Scheduler address: {}:{}".format(*s.getsockname()))
+        logger.info("Guest scheduler address: {}:{}".format(*s.getsockname()))
     queue_loop = tornado.ioloop.IOLoop.instance()
     tornado.ioloop.PeriodicCallback(app.task_runner, 1000).start()
 
@@ -175,7 +167,7 @@ def main(guestport, guestaddr, hostport, hostaddr, workers):
 
     @atexit.register
     def exit_handler():
-        logger.info("Scheduler instance shutting down")
+        logger.info("Guest scheduler instance shutting down")
         stop()
 
     signal.signal(signal.SIGINT, shutdown_handler)
@@ -187,17 +179,13 @@ def main(guestport, guestaddr, hostport, hostaddr, workers):
 
     join_worker_pool(hostaddr, hostport, guestaddr, guestport, workers)
 
-    logger.info("Scheduler starting up")
+    logger.info("Guest scheduler starting up")
     queue_loop.start()
 
 def join_worker_pool(hostaddr, hostport, guestaddr, guestport, workers):
     base_url = 'http://{}:{}'.format(hostaddr, hostport)
     request_url = '{}/join/{}:{}.{}'.format(base_url, guestaddr, guestport, workers)
     r = requests.get(request_url)
-    logger.info("About to json result")
-    result = r.json()
-    #print(result)
-    logger.info("Joined worker pool")
 
 def stop():
     tornado.ioloop.IOLoop.instance().stop()
