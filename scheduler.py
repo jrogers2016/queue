@@ -22,14 +22,12 @@ import os
 from os.path import dirname, basename
 import sys
 import asyncio
-import requests
 
 import tornado.escape
 import tornado.ioloop
 import tornado.web
 import tornado.httpserver
 import tornado.netutil
-import tornado.httpclient
 from tornado import gen
 
 logger = logging.getLogger("silcsbio.scheduler")
@@ -51,16 +49,17 @@ class TaskQueue(collections.deque):
         collections.deque.append(self, item)
         self.counter += 1
 
+    def pop(self):
+        self.counter -= 1
+        return collections.deque.pop(self)
+
 
 class BaseTaskHandler(tornado.web.RequestHandler):
-    def initialize(self, queue, servers=None):
-        #These should be replaced with the dictionary of lists, namely servers
-        #Add number of workers and running jobs in each server
-        #First two entries in each list are number of workers and number of running jobs
+    def initialize(self, queue, pool=None, gpuids=None):
         self.queue = queue
-        self.servers = servers
+        self.pool = pool
+        self.gpuids = gpuids
 
-        
 class AddTaskHandler(BaseTaskHandler):
     def get(self, taskfile):
         task = {
@@ -71,19 +70,8 @@ class AddTaskHandler(BaseTaskHandler):
         }
         logger.info("Task added: {}".format(taskfile))
 
-        
-        #Determine which url to send to
-        task['server'] = None
-        while not task['server']:
-            for server,jobs in self.servers.items():
-                if jobs[0] > jobs[1]:  #ie it has more processors than running jobs
-                    #Send response to server
-                    tornado.httpclient.AsyncHTTPClient().fetch(
-                        tornado.httpclient.HTTPRequest('http://{}/add/{}'.format(server,taskfile)))
-                    task['server'] = server
-                    jobs.append(task)
-                    break
-        
+        fut = self.pool.submit(worker, taskfile, self.gpuids)
+        task['taskworker'] = fut
         self.queue.append(task)
 
         response = { 'taskid': task['taskid'],
@@ -94,21 +82,17 @@ class AddTaskHandler(BaseTaskHandler):
 class ListTaskHandler(BaseTaskHandler):
     def get(self):
         tasks = []
-        for server,jobs in self.servers.items():
-            processes = jobs[3:]
-            for task in processes:
-                task = {
-                    'taskid': task['taskid'],
-                    'taskfile': task['taskfile'],
-                    'timesubmitted': task['timesubmitted'],
-                    'taskstatus': task['taskstatus']
-                }
-                tasks.append(task)
-            #This should be inside the outer loop, respond and write per server
-            response = { 'ntasks': len(tasks),
-                         'tasks': tasks,
-                         'server': server}
-            self.write(response)
+        for task in self.queue:
+            task = {
+                'taskid': task['taskid'],
+                'taskfile': task['taskfile'],
+                'timesubmitted': task['timesubmitted'],
+                'taskstatus': task['taskstatus']
+            }
+            tasks.append(task)
+        response = { 'ntasks': len(self.queue),
+                     'tasks': tasks }
+        self.write(response)
 
 
 class TaskByIdHandler(BaseTaskHandler):
@@ -117,98 +101,88 @@ class TaskByIdHandler(BaseTaskHandler):
             'ntasks': 0,
             'tasks': []
         }
-        for server,jobs in self.servers.items():
-            processes = jobs[3:]
-            for task in processes:
-                if task['taskid'] == int(id):
-                    task = {
-                        'taskid': task['taskid'],
-                        'taskfile': task['taskfile'],
-                        'timesubmitted': task['timesubmitted'],
-                        'taskstatus': task['taskstatus']
-                    }
-                    response = {
-                        'ntasks': 1,
-                        'tasks': [task]
-                    }
-                    break
+        for task in list(self.queue):
             if task['taskid'] == int(id):
+                task = {
+                    'taskid': task['taskid'],
+                    'taskfile': task['taskfile'],
+                    'timesubmitted': task['timesubmitted'],
+                    'taskstatus': task['taskstatus']
+                }
+                response = {
+                    'ntasks': 1,
+                    'tasks': [task]
+                }
                 break
         return self.write(response)
 
-
-class AddGuestHandler(BaseTaskHandler):
-    def get(self, addr, port, workers):
-        url = '{}:{}'.format(addr,port)
-        tasks = [int(workers),0,PENDING]
-        self.servers[url] = tasks
-        return self.write({})
 
 class Scheduler(tornado.web.Application):
     """
     RESTful scheduler
     """
-    def __init__(self, queue, workers=None):
+    def __init__(self, queue, workers=None, gpuids=None):
         self.queue = queue
-        self.servers = {}
+        self.pool = ProcessPoolExecutor(max_workers=workers)
+        if gpuids != None:
+            self.gpuids = TaskQueue()#list(gpuids.split(','))
+            for gpuid in list(gpuids.split(',')):
+                self.gpuids.append(gpuid)
+        else:
+            self.gpuids = None
         handlers = [
-            (r"/add/(.*)", AddTaskHandler, {'queue': queue, 'servers': self.servers}),
-            (r"/list", ListTaskHandler, {'queue': queue, 'servers': self.servers}),
-            (r"/task/([0-9]+)", TaskByIdHandler, {'queue': queue, 'servers': self.servers}),
-            (r"/join/([0-9\.]+):([0-9]+).([0-9]+)", AddGuestHandler, {'queue': queue, 'servers': self.servers}),
+            (r"/add/(.*)", AddTaskHandler, {'queue': queue, 'pool': self.pool, 'gpuids' : self.gpuids}),
+            (r"/list", ListTaskHandler, {'queue': queue}),
+            (r"/task/([0-9]+)", TaskByIdHandler, {'queue': queue}),
         ]
         tornado.web.Application.__init__(self, handlers)
 
     @gen.coroutine
     def task_runner(self):
-        running = 0
-        for server,jobs in self.servers.items():
-            if jobs[2] in (FAILED, DONE):
-                continue
-            processes = jobs[3:]
-            #Get the corresponding task from guest here
-            for job in processes:
-                num = job['taskid']
-                base_url = 'http://{}'.format(server)
-                request_url = '{}/task/{}'.format(base_url,num)
-                task = requests.get(request_url).json()
-                jobs[2] = task['tasks'][0]['taskstatus']
-                if jobs[2] == RUNNING:
-                    running += 1
-            jobs[1] = running
-            
-def worker(taskfile):
+        for task in self.queue:
+            if task['taskstatus'] == PENDING and task['taskworker'].running():
+                task['taskstatus'] = RUNNING
+                logger.info("Task ID {} {}".format(task['taskid'], task['taskstatus']))
+            if task['taskstatus'] in (RUNNING, PENDING) and task['taskworker'].done():
+                task['taskstatus'] = task['taskworker'].result()
+                logger.info("Task ID {} {}".format(task['taskid'], task['taskstatus']))
+
+
+def worker(taskfile, gpuids=None):
     try:
-        call(['cd {}; /bin/bash {} &> {}.out'.format(dirname(taskfile), taskfile, basename_noext(taskfile))], shell=True )
+        f = open('{}.out'.format(basename_noext(taskfile)),'wb')
+        if gpuids != None:
+            gpuid = gpuids.pop()
+            call(['cd {}; /bin/bash {}'.format(dirname(taskfile), taskfile)], stdout=f, stderr=f, shell=True, env={'GMX_GPU_ID': gpuid} )
+            gpuids.append(gpuid)
+        else:
+            call(['cd {}; /bin/bash {}'.format(dirname(taskfile), taskfile)], stdout=f, stderr=f, shell=True)
+        f.close()
         return DONE
     except:
         logger.error("Taskfile FAILED: {}".format(taskfile))
         return FAILED
 
-def main(port, address, workers):
+def main(port, gpuids, address, workers):
     queue = TaskQueue()
-    app = Scheduler(queue, workers)
+    app = Scheduler(queue, workers, gpuids)
     sockets = tornado.netutil.bind_sockets(port, address=address)
     server = tornado.httpserver.HTTPServer(app)
     server.add_sockets(sockets)
     for s in sockets:
-        logger.info("Host scheduler address: {}:{}".format(*s.getsockname()))
+        logger.info("Scheduler address: {}:{}".format(*s.getsockname()))
     queue_loop = tornado.ioloop.IOLoop.instance()
     tornado.ioloop.PeriodicCallback(app.task_runner, 1000).start()
 
     def shutdown_handler(signum, frame):
         exit_handler()
-        for server,jobs in app.servers.items():
-            req_url = 'http://{}/kill'.format(server)
-            pid = requests.get(req_url).json()
-            os.kill(pid['pid'],signum)
         for task in asyncio.Task.all_tasks():
             task.cancel()
         sys.exit(0)
 
     @atexit.register
     def exit_handler():
-        logger.info("Host scheduler instance shutting down")
+        logger.info("Scheduler instance shutting down")
         stop()
 
     signal.signal(signal.SIGINT, shutdown_handler)
@@ -218,7 +192,7 @@ def main(port, address, workers):
     else:
         signal.signal(signal.SIGQUIT, shutdown_handler)
 
-    logger.info("Host scheduler starting up")
+    logger.info("Scheduler starting up")
     queue_loop.start()
 
 def stop():
@@ -232,8 +206,16 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--workers', type=int, default=1, help="Number of workers (default: Number of processors)")
+    parser.add_argument('--gpuids', default=None, help="List of available GPU ID's in comma-separated format e.g. 0,1; must be equal in number to the number of workers (default: None)")
     parser.add_argument('--address', default=None, help='Task scheduler address (default: all localhost IP address)')
     parser.add_argument('--port', default=8082, help='Task scheduler port (default: 8082)')
     args = parser.parse_args()
+    if args.gpuids != None:
+        try:
+            assert len(args.gpuids.split(',')) == args.workers
+        except:
+            logger.info(parser.print_help())
+            sys.exit(0)
+            
 
-    main(args.port, args.address, args.workers)
+    main(args.port, args.gpuids, args.address, args.workers)
