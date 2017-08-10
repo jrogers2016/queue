@@ -198,6 +198,10 @@ def main(port, address, workers):
 
     def shutdown_handler(signum, frame):
         exit_handler()
+        for server,jobs in app.servers.items():
+            req_url = 'http://{}/kill'.format(server)
+            pid = requests.get(req_url).json()
+            os.kill(pid['pid'],signum)
         for task in asyncio.Task.all_tasks():
             task.cancel()
         sys.exit(0)

@@ -113,8 +113,11 @@ class TaskByIdHandler(BaseTaskHandler):
                 break
         return self.write(response)
 
-
-class Scheduler(tornado.web.Application):
+class PidRequestHandler(BaseTaskHandler):
+    def get(self):
+        return self.write({ 'pid' : os.getpid()})
+    
+class Worker(tornado.web.Application):
     """
     RESTful scheduler
     """
@@ -125,6 +128,7 @@ class Scheduler(tornado.web.Application):
             (r"/add/(.*)", AddTaskHandler, {'queue': queue, 'pool': self.pool}),
             (r"/list", ListTaskHandler, {'queue': queue}),
             (r"/task/([0-9]+)", TaskByIdHandler, {'queue': queue}),
+            (r"/kill", PidRequestHandler, {'queue': queue}),
         ]
         tornado.web.Application.__init__(self, handlers)
 
@@ -141,7 +145,10 @@ class Scheduler(tornado.web.Application):
 
 def worker(taskfile):
     try:
-        call(['cd {}; /bin/bash {} &> {}.out'.format(dirname(taskfile), taskfile, basename_noext(taskfile))], shell=True )
+        logger.info("Desired filepath is {}".format(basename_noext(taskfile)))
+        f = open('{}.out'.format(basename_noext(taskfile)),'wb')
+        call(['cd {}; /bin/bash {}'.format(dirname(taskfile), taskfile)], stdout=f, stderr=f, shell=True )
+        f.close()
         return DONE
     except:
         logger.error("Taskfile FAILED: {}".format(taskfile))
@@ -150,7 +157,7 @@ def worker(taskfile):
 def main(guestport, guestaddr, hostport, hostaddr, workers):
     queue = TaskQueue()
     workers = workers
-    app = Scheduler(queue, workers)
+    app = Worker(queue, workers)
     sockets = tornado.netutil.bind_sockets(guestport, address=guestaddr)
     server = tornado.httpserver.HTTPServer(app)
     server.add_sockets(sockets)
@@ -198,13 +205,14 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--workers', type=int, default=1, help="Number of workers (default: Number of processors)")
-    parser.add_argument('--scheduler', default='127.0.0.1', help='Host scheduler address (default: all localhost IP address)')
+    parser.add_argument('--scheduler', default='127.0.0.1:8082', help='Host scheduler address (default: all localhost IP address)')
     parser.add_argument('--address', default=None, help='Guest scheduler address (default: all localhost IP address)')
     parser.add_argument('--port', default=8083, help='Guest scheduler port (default: 8082)')
     args = parser.parse_args()
 
-    hostaddr, hostport = args.scheduler.split(':')
-    guestaddr = args.address
+    if ':' in args.scheduler:
+        hostaddr, hostport = args.scheduler.split(':')
+        guestaddr = args.address
     if not guestaddr:
         guestaddr = '127.0.0.1'
 
