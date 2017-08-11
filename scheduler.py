@@ -95,7 +95,7 @@ class ListTaskHandler(BaseTaskHandler):
     def get(self):
         tasks = []
         for server,jobs in self.servers.items():
-            processes = jobs[3:]
+            processes = jobs[2:]
             for task in processes:
                 task = {
                     'taskid': task['taskid'],
@@ -118,7 +118,7 @@ class TaskByIdHandler(BaseTaskHandler):
             'tasks': []
         }
         for server,jobs in self.servers.items():
-            processes = jobs[3:]
+            processes = jobs[2:]
             for task in processes:
                 if task['taskid'] == int(id):
                     task = {
@@ -139,10 +139,21 @@ class TaskByIdHandler(BaseTaskHandler):
 
 class AddGuestHandler(BaseTaskHandler):
     def get(self, addr, port, workers):
-        url = '{}:{}'.format(addr,port)
-        tasks = [int(workers),0,PENDING]
+        url = '{}:{}'.format(addr, port)
+        #url = '{}:{}'.format(addr,port)
+        tasks = [int(workers),0]
         self.servers[url] = tasks
         return self.write({})
+
+class DetachGuestHandler(BaseTaskHandler):
+    def get(self, addr, port):
+        url = '{}:{}'.format(addr,port)
+        #guest = self.servers[url]
+        #del self.servers[url]
+        #logger.info(len(list(self.servers.keys())))
+        if url in self.servers.keys():
+            del self.servers[url]
+        #logger.info(len(list(self.servers.keys())))
 
 class Scheduler(tornado.web.Application):
     """
@@ -156,26 +167,37 @@ class Scheduler(tornado.web.Application):
             (r"/list", ListTaskHandler, {'queue': queue, 'servers': self.servers}),
             (r"/task/([0-9]+)", TaskByIdHandler, {'queue': queue, 'servers': self.servers}),
             (r"/join/([0-9\.]+):([0-9]+).([0-9]+)", AddGuestHandler, {'queue': queue, 'servers': self.servers}),
+            (r"/detach/([0-9\.]+):([0-9]+)", DetachGuestHandler, {'queue': queue, 'servers': self.servers}),
         ]
         tornado.web.Application.__init__(self, handlers)
 
     @gen.coroutine
     def task_runner(self):
         running = 0
+        #pending = 0
         for server,jobs in self.servers.items():
-            if jobs[2] in (FAILED, DONE):
-                continue
-            processes = jobs[3:]
+            #if jobs[2] in (FAILED, DONE):
+            #    continue
+            processes = jobs[2:]
             #Get the corresponding task from guest here
             for job in processes:
+                if job['taskstatus'] in (FAILED, DONE):
+                    continue
                 num = job['taskid']
                 base_url = 'http://{}'.format(server)
                 request_url = '{}/task/{}'.format(base_url,num)
                 task = requests.get(request_url).json()
-                jobs[2] = task['tasks'][0]['taskstatus']
-                if jobs[2] == RUNNING:
+                job['taskstatus'] = task['tasks'][0]['taskstatus']
+                #jobs[2] = task['tasks'][0]['taskstatus']
+                if job['taskstatus'] == RUNNING:
                     running += 1
+                #elif job['taskstatus'] == PENDING:
+                #    pending += 1
             jobs[1] = running
+            #if running > 0:
+            #    jobs[2] = RUNNING
+            #elif pending > 0:
+            #    jobs[2] = PENDING
             
 def worker(taskfile):
     try:
@@ -198,10 +220,11 @@ def main(port, address, workers):
 
     def shutdown_handler(signum, frame):
         exit_handler()
-        for server,jobs in app.servers.items():
-            req_url = 'http://{}/kill'.format(server)
-            pid = requests.get(req_url).json()
-            os.kill(pid['pid'],signum)
+        if len(list(app.servers.keys())) > 0:
+            for server,jobs in app.servers.items():
+                req_url = 'http://{}/kill'.format(server)
+                pid = requests.get(req_url).json()
+                os.kill(pid['pid'],signum)
         for task in asyncio.Task.all_tasks():
             task.cancel()
         sys.exit(0)
