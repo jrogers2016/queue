@@ -79,7 +79,7 @@ class AddTaskHandler(BaseTaskHandler):
                 if jobs[0] > jobs[1]:  #ie it has more processors than running jobs
                     #Send response to server
                     tornado.httpclient.AsyncHTTPClient().fetch(
-                        tornado.httpclient.HTTPRequest('http://{}/add/{}'.format(server,taskfile)))
+                        tornado.httpclient.HTTPRequest('http://{}/add/{}:{}'.format(server,taskfile,task['taskid'])))
                     task['server'] = server
                     jobs.append(task)
                     break
@@ -140,7 +140,6 @@ class TaskByIdHandler(BaseTaskHandler):
 class AddGuestHandler(BaseTaskHandler):
     def get(self, addr, port, workers):
         url = '{}:{}'.format(addr, port)
-        #url = '{}:{}'.format(addr,port)
         tasks = [int(workers),0]
         self.servers[url] = tasks
         return self.write({})
@@ -148,12 +147,8 @@ class AddGuestHandler(BaseTaskHandler):
 class DetachGuestHandler(BaseTaskHandler):
     def get(self, addr, port):
         url = '{}:{}'.format(addr,port)
-        #guest = self.servers[url]
-        #del self.servers[url]
-        #logger.info(len(list(self.servers.keys())))
         if url in self.servers.keys():
             del self.servers[url]
-        #logger.info(len(list(self.servers.keys())))
 
 class Scheduler(tornado.web.Application):
     """
@@ -174,12 +169,8 @@ class Scheduler(tornado.web.Application):
     @gen.coroutine
     def task_runner(self):
         running = 0
-        #pending = 0
         for server,jobs in self.servers.items():
-            #if jobs[2] in (FAILED, DONE):
-            #    continue
             processes = jobs[2:]
-            #Get the corresponding task from guest here
             for job in processes:
                 if job['taskstatus'] in (FAILED, DONE):
                     continue
@@ -188,16 +179,9 @@ class Scheduler(tornado.web.Application):
                 request_url = '{}/task/{}'.format(base_url,num)
                 task = requests.get(request_url).json()
                 job['taskstatus'] = task['tasks'][0]['taskstatus']
-                #jobs[2] = task['tasks'][0]['taskstatus']
                 if job['taskstatus'] == RUNNING:
                     running += 1
-                #elif job['taskstatus'] == PENDING:
-                #    pending += 1
             jobs[1] = running
-            #if running > 0:
-            #    jobs[2] = RUNNING
-            #elif pending > 0:
-            #    jobs[2] = PENDING
             
 def worker(taskfile):
     try:

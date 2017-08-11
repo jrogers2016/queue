@@ -63,9 +63,9 @@ class BaseTaskHandler(tornado.web.RequestHandler):
 
 
 class AddTaskHandler(BaseTaskHandler):
-    def get(self, taskfile):
+    def get(self, taskfile, taskid):
         task = {
-            'taskid': self.queue.counter,
+            'taskid': int(taskid),
             'taskfile': taskfile,
             'timesubmitted': datetime.now().isoformat(),
             'taskstatus': PENDING,
@@ -136,7 +136,7 @@ class Worker(tornado.web.Application):
         else:
             self.gpuids = None
         handlers = [
-            (r"/add/(.*)", AddTaskHandler, {'queue': queue, 'pool': self.pool, 'gpuids': self.gpuids}),
+            (r"/add/(.*):([0-9]+)", AddTaskHandler, {'queue': queue, 'pool': self.pool, 'gpuids': self.gpuids}),
             (r"/list", ListTaskHandler, {'queue': queue}),
             (r"/task/([0-9]+)", TaskByIdHandler, {'queue': queue}),
             (r"/kill", PidRequestHandler, {'queue': queue}),
