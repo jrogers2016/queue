@@ -17,6 +17,9 @@ def add_task(taskfile, port, addr):
     base_url = 'http://{}:{}'.format(addr, port)
     request_url = '{}/add/{}'.format(base_url, taskfile)
     r = requests.get(request_url)
+    if r.status_code >= 400:
+        print("Task submission failed with code {}".format(r.status_code))
+        return
     result = r.json()
     if result['tasksubmitted']:
         print("Task {} submitted".format(result['taskid']))

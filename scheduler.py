@@ -74,6 +74,9 @@ class AddTaskHandler(BaseTaskHandler):
         
         #Determine which url to send to
         task['server'] = None
+        if not self.servers:
+            self.set_status(503)
+            return self.write("No guests have been started to run this job")
         while not task['server']:
             for server,jobs in self.servers.items():
                 if jobs[0] > jobs[1]:  #ie it has more processors than running jobs
