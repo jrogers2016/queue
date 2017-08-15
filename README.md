@@ -1,5 +1,6 @@
 # queue
 Minimal queue system for a single workstation
+
 To enable multiple workstations, start a scheduler on the primary station and a different worker process on each secondary station
 
 # usage
